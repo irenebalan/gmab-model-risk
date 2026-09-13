@@ -1,0 +1,200 @@
+        "VIX",
+    }
+
+    for maturity in MATURITIES:
+        required.add(
+            f"RiskFree_{maturity}Y"
+        )
+
+    missing = required.difference(
+        data.columns
+    )
+
+    if missing:
+        raise RuntimeError(
+            f"Mancano le colonne "
+            f"{sorted(missing)}."
+        )
+
+    for column in required:
+        data[column] = pd.to_numeric(
+            data[column],
+            errors="coerce",
+        )
+
+    return data.loc[
+        ~data.index.duplicated(
+            keep="first"
+        )
+    ]
+
+
+def get_rate(
+    data,
+    date,
+    maturity,
+):
+    column = (
+        f"RiskFree_{maturity}Y"
+    )
+
+    rates = data.loc[
+        data.index <= date,
+        column,
+    ].dropna()
+
+    if rates.empty:
+        raise RuntimeError(
+            f"Nessun tasso {maturity}Y "
+            f"disponibile alla data "
+            f"{date.date()}."
+        )
+
+    return float(
+        rates.iloc[-1]
+    )
+
+
+def get_vix(
+    data,
+    date,
+):
+    vix = data.loc[
+        data.index <= date,
+        "VIX",
+    ].dropna()
+
+    if vix.empty:
+        raise RuntimeError(
+            f"Nessun VIX disponibile "
+            f"alla data {date.date()}."
+        )
+
+    return float(
+        vix.iloc[-1]
+    ) / 100.0
+
+
+def find_equivalent_sigma(
+    target_price,
+    maturity,
+    risk_free,
+):
+    def objective(sigma):
+        return (
+            bs_put_price(
+                par.INITIAL_FUND_VALUE,
+                par.G,
+                risk_free,
+                par.TOTAL_FEE_ANNUAL,
+                sigma,
+                maturity,
+            )
+            - target_price
+        )
+
+    lower = 1e-6
+    upper = 3.0
+
+    if (
+        objective(lower)
+        * objective(upper)
+        > 0
+    ):
+        raise RuntimeError(
+            f"Impossibile trovare "
+            f"sigma equivalente per "
+            f"T={maturity}."
+        )
+
+    return float(
+        brentq(
+            objective,
+            lower,
+            upper,
+        )
+    )
+
+
+def current_mismatch_analysis(
+    data,
+    heston,
+):
+    required_columns = [
+        "INDEX_EUR",
+        "VIX",
+    ]
+
+    required_columns += [
+        f"RiskFree_{maturity}Y"
+        for maturity in MATURITIES
+    ]
+
+    valid = data.dropna(
+        subset=required_columns
+    )
+
+    if valid.empty:
+        raise RuntimeError(
+            "Nessuna data corrente "
+            "con tutti gli input richiesti."
+        )
+
+    valuation_date = (
+        valid.index[-1]
+    )
+
+    index_series = (
+        data.loc[
+            :valuation_date,
+            "INDEX_EUR",
+        ]
+        .dropna()
+    )
+
+    parameters = (
+        heston.estimate_heston_parameters(
+            index_series
+        )
+    )
+
+    vix_sigma = get_vix(
+        data,
+        valuation_date,
+    )
+
+    results = []
+
+    for maturity in MATURITIES:
+        risk_free = get_rate(
+            data,
+            valuation_date,
+            maturity,
+        )
+
+        (
+            heston_price,
+            heston_delta,
+        ) = (
+            heston.heston_put_price_delta(
+                par.INITIAL_FUND_VALUE,
+                par.G,
+                parameters["v0"],
+                risk_free,
+                par.TOTAL_FEE_ANNUAL,
+                float(maturity),
+                parameters,
+            )
+        )
+
+        equivalent_sigma = (
+            find_equivalent_sigma(
+                heston_price,
+                float(maturity),
+                risk_free,
+            )
+        )
+
+        vix_price = bs_put_price(
+            par.INITIAL_FUND_VALUE,
+            par.G,
