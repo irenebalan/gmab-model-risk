@@ -388,7 +388,9 @@ def main():
 
     print(
         f"\nFile salvato: "
-        f"{Path(par.FILE_PREZZO_GMAB).resolve()}"
+        f"{Path(
+            par.FILE_PREZZO_GMAB
+        ).resolve()}"
     )
 
 
