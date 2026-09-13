@@ -1,0 +1,473 @@
+        "valore_fondo_scadenza": terminal_fund_value,
+        "valore_hedge_scadenza": terminal_hedge_value,
+        "valore_copertura_scadenza": terminal_portfolio_value,
+        "payoff_gmab": payoff,
+        "costi_transazione_totali": total_transaction_cost,
+        "hedging_error": hedging_error,
+        "deficit": max(-hedging_error, 0.0),
+        "surplus": max(hedging_error, 0.0),
+    }
+
+
+def aggregate_results(results):
+    data = results.copy()
+
+    data["errore_assoluto"] = data["hedging_error"].abs()
+    data["errore_quadrato"] = data["hedging_error"] ** 2
+    data["in_deficit"] = data["hedging_error"] < 0
+
+    summary = (
+        data.groupby(
+            [
+                "scenario_drag_proxy",
+                "proxy_drag",
+                "scenario",
+                "ribilanciamento",
+                "rebalance_days",
+                "costo_transazione",
+            ],
+            as_index=False,
+        )
+        .agg(
+            numero_finestre=("data_inizio", "count"),
+            sigma_media=("sigma", "mean"),
+            sigma_min=("sigma", "min"),
+            sigma_max=("sigma", "max"),
+            vol_realizzata_media=("vol_realizzata", "mean"),
+            errore_stima_vol_medio=("errore_stima_vol", "mean"),
+            prezzo_gmab_medio=("prezzo_gmab_iniziale", "mean"),
+            errore_medio=("hedging_error", "mean"),
+            mae=("errore_assoluto", "mean"),
+            mse=("errore_quadrato", "mean"),
+            deficit_medio=("deficit", "mean"),
+            surplus_medio=("surplus", "mean"),
+            frequenza_deficit=("in_deficit", "mean"),
+            costo_transazione_medio=("costi_transazione_totali", "mean"),
+            peggior_errore=("hedging_error", "min"),
+            miglior_errore=("hedging_error", "max"),
+        )
+    )
+
+    summary["rmse"] = np.sqrt(summary["mse"])
+    summary["frequenza_deficit_pct"] = (
+        summary["frequenza_deficit"] * 100
+    )
+
+    summary = summary.drop(
+        columns=["mse", "frequenza_deficit"]
+    )
+
+    return (
+        summary.sort_values(
+            [
+                "scenario_drag_proxy",
+                "scenario",
+                "costo_transazione",
+                "rebalance_days",
+            ]
+        )
+        .reset_index(drop=True)
+    )
+
+
+def calculate_correlations(results):
+    rows = []
+
+    grouped = results.groupby(
+        [
+            "scenario_drag_proxy",
+            "proxy_drag",
+            "scenario",
+            "ribilanciamento",
+            "rebalance_days",
+            "costo_transazione",
+        ]
+    )
+
+    for keys, group in grouped:
+        (
+            drag_name,
+            proxy_drag,
+            scenario,
+            rebalance_name,
+            rebalance_days,
+            transaction_cost_rate,
+        ) = keys
+
+        valid = group[
+            ["errore_stima_vol", "hedging_error"]
+        ].dropna()
+
+        if (
+            len(valid) >= 2
+            and valid["errore_stima_vol"].std(ddof=1) > 0
+            and valid["hedging_error"].std(ddof=1) > 0
+        ):
+            correlation = float(
+                valid["errore_stima_vol"].corr(
+                    valid["hedging_error"]
+                )
+            )
+        else:
+            correlation = np.nan
+
+        rows.append(
+            {
+                "scenario_drag_proxy": drag_name,
+                "proxy_drag": proxy_drag,
+                "scenario": scenario,
+                "ribilanciamento": rebalance_name,
+                "rebalance_days": rebalance_days,
+                "costo_transazione": transaction_cost_rate,
+                "numero_finestre": len(valid),
+                "correlazione_gap_vol_errore_hedging": correlation,
+            }
+        )
+
+    return (
+        pd.DataFrame(rows)
+        .sort_values(
+            [
+                "scenario_drag_proxy",
+                "scenario",
+                "costo_transazione",
+                "rebalance_days",
+            ]
+        )
+        .reset_index(drop=True)
+    )
+
+
+def create_rmse_plot(summary):
+    subset = summary.loc[
+        (summary["scenario_drag_proxy"] == "senza_drag_proxy")
+        & np.isclose(
+            summary["costo_transazione"],
+            par.TRANSACTION_COST_RATE,
+        )
+    ].copy()
+
+    plt.figure(figsize=(11, 6))
+
+    for scenario in subset["scenario"].unique():
+        scenario_data = subset.loc[
+            subset["scenario"] == scenario
+        ].sort_values("rebalance_days")
+
+        plt.plot(
+            scenario_data["ribilanciamento"],
+            scenario_data["rmse"],
+            marker="o",
+            label=scenario,
+        )
+
+    plt.xlabel("Frequenza di ribilanciamento")
+    plt.ylabel("RMSE dell'errore di copertura")
+    plt.title("GMAB: errore di copertura per frequenza")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(OUTPUT_PLOT, dpi=150)
+    plt.show()
+
+
+def create_volatility_error_plot(results):
+    subset = results.loc[
+        (results["scenario_drag_proxy"] == "senza_drag_proxy")
+        & (results["ribilanciamento"] == par.BASE_REBALANCE_FREQUENCY)
+        & np.isclose(
+            results["costo_transazione"],
+            par.TRANSACTION_COST_RATE,
+        )
+    ].copy()
+
+    plt.figure(figsize=(11, 6))
+
+    for scenario in subset["scenario"].unique():
+        scenario_data = subset.loc[
+            subset["scenario"] == scenario
+        ]
+
+        correlation = scenario_data["errore_stima_vol"].corr(
+            scenario_data["hedging_error"]
+        )
+
+        plt.scatter(
+            scenario_data["errore_stima_vol"] * 100,
+            scenario_data["hedging_error"],
+            label=f"{scenario} (rho={correlation:.2f})",
+        )
+
+    plt.axhline(0.0, linestyle="--")
+    plt.axvline(0.0, linestyle="--")
+    plt.xlabel(
+        "Volatilita' realizzata - volatilita' stimata "
+        "(punti percentuali)"
+    )
+    plt.ylabel("Errore di copertura")
+    plt.title("Errore di stima della volatilita' e hedging error")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(OUTPUT_PLOT_VOLATILITY_ERROR, dpi=150)
+    plt.show()
+
+
+def build_proxy_drag_sensitivity(summary):
+    sensitivity = summary.loc[
+        (summary["ribilanciamento"] == par.BASE_REBALANCE_FREQUENCY)
+        & np.isclose(
+            summary["costo_transazione"],
+            par.TRANSACTION_COST_RATE,
+        )
+    ][
+        [
+            "scenario_drag_proxy",
+            "proxy_drag",
+            "scenario",
+            "prezzo_gmab_medio",
+            "errore_medio",
+            "mae",
+            "rmse",
+            "deficit_medio",
+            "surplus_medio",
+            "frequenza_deficit_pct",
+        ]
+    ].copy()
+
+    return sensitivity.sort_values(
+        ["scenario", "proxy_drag"]
+    ).reset_index(drop=True)
+
+
+def create_proxy_drag_plot(sensitivity):
+    plt.figure(figsize=(11, 6))
+
+    for drag_name in sensitivity["scenario_drag_proxy"].unique():
+        scenario_data = sensitivity.loc[
+            sensitivity["scenario_drag_proxy"] == drag_name
+        ]
+
+        plt.plot(
+            scenario_data["scenario"],
+            scenario_data["rmse"],
+            marker="o",
+            label=drag_name,
+        )
+
+    plt.xlabel("Scenario di volatilita'")
+    plt.ylabel("RMSE dell'errore di copertura")
+    plt.title("Sensitivita' al drag della proxy")
+    plt.xticks(rotation=20)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(OUTPUT_PLOT_PROXY_DRAG, dpi=150)
+    plt.show()
+
+
+def main():
+    par.OUTPUT_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    market_data = load_market_data()
+    windows = generate_backtest_windows(market_data)
+
+    print("=== Configurazione GMAB ===")
+    print(f"Proxy storica: {par.LONG_INDEX_TICKER}")
+    print(f"Valuta: {par.CONTRACT_CURRENCY}")
+    print(f"Valore iniziale fondo: {par.INITIAL_FUND_VALUE:.4f}")
+    print(f"Capitale garantito: {par.G:.4f}")
+    print(f"Scadenza: {par.GMAB_MATURITY_YEARS} anni")
+    print(f"Fee totale modello: {par.TOTAL_FEE_ANNUAL:.4%}")
+    print(
+        "Tasso di pricing e cash: "
+        f"RiskFree_{par.GMAB_MATURITY_YEARS}Y "
+        "osservato all'inizio di ogni finestra e mantenuto fisso"
+    )
+    print(
+        f"Drag proxy continuo di sensitivita': "
+        f"{par.PROXY_DRAG_CONTINUOUS:.4%}"
+    )
+    print(
+        "Scenario senza drag: "
+        f"TER + fee polizza = {par.TOTAL_FEE_ANNUAL:.4%}"
+    )
+    print(
+        "Scenario con drag: "
+        f"fee polizza + drag empirico = "
+        f"{get_effective_fund_drag(par.PROXY_DRAG_CONTINUOUS):.4%}"
+    )
+    print(f"Numero di finestre: {len(windows)}")
+
+    results = []
+
+    for start_date, end_date in windows:
+        print(
+            f"\n=== Finestra {start_date.date()} - "
+            f"{end_date.date()} ==="
+        )
+
+        risk_free = get_initial_risk_free_rate(
+            market_data,
+            start_date,
+        )
+
+        scenarios = estimate_volatility_scenarios(
+            market_data,
+            start_date,
+        )
+
+        for drag_name, proxy_drag in par.PROXY_DRAG_SCENARIOS.items():
+            paths = build_fund_paths(
+                market_data,
+                start_date,
+                end_date,
+                proxy_drag,
+            )
+
+            realized_sigma = realized_volatility(paths)
+
+            for scenario, sigma in scenarios.items():
+                volatility_error = realized_sigma - sigma
+
+                for rebalance_name, rebalance_days in (
+                    par.REBALANCE_FREQUENCIES.items()
+                ):
+                    for transaction_cost_rate in (
+                        par.TRANSACTION_COST_SCENARIOS
+                    ):
+                        hedge = run_single_gmab_hedge(
+                            paths,
+                            sigma,
+                            risk_free,
+                            rebalance_days,
+                            transaction_cost_rate,
+                            proxy_drag,
+                        )
+
+                        results.append(
+                            {
+                                "data_inizio": start_date,
+                                "data_fine": end_date,
+                                "scenario_drag_proxy": drag_name,
+                                "proxy_drag": proxy_drag,
+                                "scenario": scenario,
+                                "sigma": sigma,
+                                "vol_realizzata": realized_sigma,
+                                "errore_stima_vol": volatility_error,
+                                "ribilanciamento": rebalance_name,
+                                "rebalance_days": rebalance_days,
+                                "costo_transazione": transaction_cost_rate,
+                                **hedge,
+                            }
+                        )
+
+    results_table = pd.DataFrame(results)
+    summary = aggregate_results(results_table)
+    correlations = calculate_correlations(results_table)
+    proxy_drag_sensitivity = build_proxy_drag_sensitivity(summary)
+
+    results_table.to_csv(
+        OUTPUT_WINDOWS,
+        index=False,
+        date_format="%Y-%m-%d",
+    )
+
+    summary.to_csv(
+        OUTPUT_SCENARIOS,
+        index=False,
+    )
+
+    correlations.to_csv(
+        OUTPUT_CORRELATIONS,
+        index=False,
+    )
+
+    proxy_drag_sensitivity.to_csv(
+        OUTPUT_PROXY_DRAG,
+        index=False,
+    )
+
+    print("\n=== Diagnostica delle finestre ===")
+
+    for drag_name in par.PROXY_DRAG_SCENARIOS:
+        window_payoffs = (
+            results_table.loc[
+                results_table["scenario_drag_proxy"] == drag_name,
+                ["data_inizio", "data_fine", "payoff_gmab"],
+            ]
+            .drop_duplicates(
+                subset=["data_inizio", "data_fine"]
+            )
+        )
+
+        positive_payoffs = int(
+            (window_payoffs["payoff_gmab"] > 0).sum()
+        )
+
+        print(f"\nScenario: {drag_name}")
+        print(f"Finestre totali: {len(window_payoffs)}")
+        print(
+            f"Finestre con payoff GMAB > 0: "
+            f"{positive_payoffs}"
+        )
+        print(
+            f"Percentuale con evento: "
+            f"{positive_payoffs / len(window_payoffs):.2%}"
+        )
+
+        if positive_payoffs == 0:
+            print(
+                "Il backtest storico non contiene eventi di "
+                "attivazione della garanzia."
+            )
+
+    print("\n=== Sintesi sensitivita' drag proxy ===")
+    print(
+        proxy_drag_sensitivity.to_string(
+            index=False,
+            float_format=lambda value: f"{value:.6f}",
+        )
+    )
+
+    print(
+        "\n=== Correlazione fra errore di stima "
+        "della volatilita' e hedging error "
+        "(caso base senza drag) ==="
+    )
+
+    base_correlations = correlations.loc[
+        (correlations["scenario_drag_proxy"] == "senza_drag_proxy")
+        & (
+            correlations["ribilanciamento"]
+            == par.BASE_REBALANCE_FREQUENCY
+        )
+        & np.isclose(
+            correlations["costo_transazione"],
+            par.TRANSACTION_COST_RATE,
+        )
+    ]
+
+    print(
+        base_correlations.to_string(
+            index=False,
+            float_format=lambda value: f"{value:.6f}",
+        )
+    )
+
+    create_rmse_plot(summary)
+    create_volatility_error_plot(results_table)
+    create_proxy_drag_plot(proxy_drag_sensitivity)
+
+    print("\nFile salvati:")
+    print(f"  - {OUTPUT_WINDOWS}")
+    print(f"  - {OUTPUT_SCENARIOS}")
+    print(f"  - {OUTPUT_CORRELATIONS}")
+    print(f"  - {OUTPUT_PROXY_DRAG}")
+    print(f"  - {OUTPUT_PLOT}")
+    print(f"  - {OUTPUT_PLOT_VOLATILITY_ERROR}")
+    print(f"  - {OUTPUT_PLOT_PROXY_DRAG}")
+
+
+if __name__ == "__main__":
+    main()
