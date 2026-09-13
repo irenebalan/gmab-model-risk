@@ -1,0 +1,36 @@
+name: Assemble repository files
+
+on:
+  push:
+    paths:
+      - '.assemble-trigger'
+
+permissions:
+  contents: write
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Assemble Python modules
+        shell: bash
+        run: |
+          cat .upload_parts/04_hedging_backtest.part* > 04_hedging_backtest.py
+          cat .upload_parts/05_montecarlo_heston.part* > 05_montecarlo_heston.py
+          cat .upload_parts/06_validazione_proxy.part* > 06_validazione_proxy.py
+          cat .upload_parts/07_vix_mismatch.part* > 07_vix_mismatch.py
+          rm -rf .upload_parts
+          rm -f .assemble-trigger
+          python -m py_compile *.py
+
+      - name: Commit assembled files
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add remaining analysis modules"
+          git push
