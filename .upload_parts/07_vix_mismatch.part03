@@ -1,0 +1,200 @@
+            realized_sigma = float(
+                returns.std(
+                    ddof=1
+                )
+                * np.sqrt(
+                    par.TRADING_DAYS_PER_YEAR
+                )
+            )
+
+            vix_sigma = get_vix(
+                data,
+                start_date,
+            )
+
+            risk_free = get_rate(
+                data,
+                start_date,
+                maturity,
+            )
+
+            vix_price = bs_put_price(
+                par.INITIAL_FUND_VALUE,
+                par.G,
+                risk_free,
+                par.TOTAL_FEE_ANNUAL,
+                vix_sigma,
+                float(maturity),
+            )
+
+            realized_price = (
+                bs_put_price(
+                    par.INITIAL_FUND_VALUE,
+                    par.G,
+                    risk_free,
+                    par.TOTAL_FEE_ANNUAL,
+                    realized_sigma,
+                    float(maturity),
+                )
+            )
+
+            vix_delta = bs_put_delta(
+                par.INITIAL_FUND_VALUE,
+                par.G,
+                risk_free,
+                par.TOTAL_FEE_ANNUAL,
+                vix_sigma,
+                float(maturity),
+            )
+
+            realized_delta = (
+                bs_put_delta(
+                    par.INITIAL_FUND_VALUE,
+                    par.G,
+                    risk_free,
+                    par.TOTAL_FEE_ANNUAL,
+                    realized_sigma,
+                    float(maturity),
+                )
+            )
+
+            sigma_error = (
+                vix_sigma
+                - realized_sigma
+            )
+
+            price_error = (
+                vix_price
+                - realized_price
+            )
+
+            if realized_price != 0:
+                price_error_pct = (
+                    price_error
+                    / realized_price
+                    * 100.0
+                )
+            else:
+                price_error_pct = (
+                    np.nan
+                )
+
+            results.append(
+                {
+                    "data_inizio": (
+                        start_date
+                    ),
+                    "data_fine": (
+                        end_date
+                    ),
+                    "scadenza_anni": (
+                        maturity
+                    ),
+                    "vix_sigma": (
+                        vix_sigma
+                    ),
+                    "vol_realizzata_futura": (
+                        realized_sigma
+                    ),
+                    "errore_sigma": (
+                        sigma_error
+                    ),
+                    "tasso_risk_free": (
+                        risk_free
+                    ),
+                    "prezzo_vix": (
+                        vix_price
+                    ),
+                    "prezzo_vol_realizzata": (
+                        realized_price
+                    ),
+                    "errore_prezzo": (
+                        price_error
+                    ),
+                    "errore_prezzo_pct": (
+                        price_error_pct
+                    ),
+                    "delta_vix": (
+                        vix_delta
+                    ),
+                    "delta_vol_realizzata": (
+                        realized_delta
+                    ),
+                    "errore_delta": (
+                        vix_delta
+                        - realized_delta
+                    ),
+                }
+            )
+
+    if not results:
+        raise RuntimeError(
+            "Nessun backtest VIX "
+            "disponibile."
+        )
+
+    return pd.DataFrame(
+        results
+    )
+
+
+def summarize_historical(
+    backtest,
+):
+    data = backtest.copy()
+
+    data[
+        "errore_sigma_assoluto"
+    ] = (
+        data[
+            "errore_sigma"
+        ].abs()
+    )
+
+    data[
+        "errore_sigma_quadrato"
+    ] = (
+        data[
+            "errore_sigma"
+        ] ** 2
+    )
+
+    data[
+        "errore_prezzo_assoluto"
+    ] = (
+        data[
+            "errore_prezzo"
+        ].abs()
+    )
+
+    data[
+        "errore_prezzo_quadrato"
+    ] = (
+        data[
+            "errore_prezzo"
+        ] ** 2
+    )
+
+    data[
+        "vix_sovrastima"
+    ] = (
+        data[
+            "errore_sigma"
+        ] > 0
+    )
+
+    summary = (
+        data.groupby(
+            "scadenza_anni",
+            as_index=False,
+        )
+        .agg(
+            numero_finestre=(
+                "data_inizio",
+                "count",
+            ),
+            vix_medio=(
+                "vix_sigma",
+                "mean",
+            ),
+            vol_realizzata_media=(
