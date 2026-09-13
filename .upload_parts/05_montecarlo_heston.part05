@@ -1,0 +1,200 @@
+            )
+            * z_variance,
+            1e-10,
+        )
+
+        if (
+            save_position
+            < n_saved
+            and step
+            == save_steps[
+                save_position
+            ]
+        ):
+            elapsed_years = (
+                step
+                / par.TRADING_DAYS_PER_YEAR
+            )
+
+            hedge_paths[
+                :,
+                save_position,
+            ] = hedge_asset
+
+            fund_paths[
+                :,
+                save_position,
+            ] = (
+                hedge_asset
+                * np.exp(
+                    -par.TOTAL_FEE_ANNUAL
+                    * elapsed_years
+                )
+            )
+
+            variance_paths[
+                :,
+                save_position,
+            ] = variance
+
+            save_position += 1
+
+    times = (
+        np.asarray(
+            save_steps,
+            dtype=float,
+        )
+        / par.TRADING_DAYS_PER_YEAR
+    )
+
+    average_realized_variance = (
+        integrated_variance
+        / float(
+            par.GMAB_MATURITY_YEARS
+        )
+    )
+
+    return (
+        hedge_paths,
+        fund_paths,
+        variance_paths,
+        times,
+        average_realized_variance,
+    )
+
+
+def run_bs_hedge(
+    hedge_paths,
+    fund_paths,
+    times,
+    sigma,
+    r,
+    initial_capital=None,
+):
+    n_paths = (
+        hedge_paths.shape[0]
+    )
+
+    T = float(
+        par.GMAB_MATURITY_YEARS
+    )
+
+    model_price = bs_put_price(
+        par.INITIAL_FUND_VALUE,
+        par.G,
+        r,
+        par.TOTAL_FEE_ANNUAL,
+        sigma,
+        T,
+    )
+
+    initial_delta = bs_put_delta(
+        par.INITIAL_FUND_VALUE,
+        par.G,
+        r,
+        par.TOTAL_FEE_ANNUAL,
+        sigma,
+        T,
+    )
+
+    hedge_units = np.full(
+        n_paths,
+        initial_delta,
+    )
+
+    if initial_capital is None:
+        initial_capital = (
+            model_price
+        )
+
+    cash = (
+        initial_capital
+        - hedge_units
+        * hedge_paths[:, 0]
+    )
+
+    for j in range(
+        1,
+        len(times) - 1,
+    ):
+        dt = (
+            times[j]
+            - times[j - 1]
+        )
+
+        cash *= np.exp(
+            r * dt
+        )
+
+        portfolio_value = (
+            hedge_units
+            * hedge_paths[:, j]
+            + cash
+        )
+
+        remaining_time = (
+            T - times[j]
+        )
+
+        delta = bs_put_delta(
+            fund_paths[:, j],
+            par.G,
+            r,
+            par.TOTAL_FEE_ANNUAL,
+            sigma,
+            remaining_time,
+        )
+
+        new_units = (
+            delta
+            * fund_paths[:, j]
+            / hedge_paths[:, j]
+        )
+
+        cash = (
+            portfolio_value
+            - new_units
+            * hedge_paths[:, j]
+        )
+
+        hedge_units = (
+            new_units
+        )
+
+    final_dt = (
+        times[-1]
+        - times[-2]
+    )
+
+    cash *= np.exp(
+        r * final_dt
+    )
+
+    terminal_value = (
+        hedge_units
+        * hedge_paths[:, -1]
+        + cash
+    )
+
+    payoff = np.maximum(
+        par.G
+        - fund_paths[:, -1],
+        0.0,
+    )
+
+    error = (
+        terminal_value
+        - payoff
+    )
+
+    return (
+        model_price,
+        error,
+    )
+
+
+def run_heston_hedge(
+    hedge_paths,
+    fund_paths,
+    variance_paths,
+    times,
