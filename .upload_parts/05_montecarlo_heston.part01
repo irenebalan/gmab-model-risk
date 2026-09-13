@@ -1,0 +1,200 @@
+    residuals = (
+        v_next
+        - (
+            intercept
+            + persistence * v_t
+        )
+    )
+
+    variance_scale = np.sqrt(
+        np.maximum(
+            v_t,
+            1e-10,
+        )
+        * dt
+    )
+
+    xi = float(
+        np.std(
+            residuals
+            / variance_scale,
+            ddof=1,
+        )
+    )
+
+    sampled_prices = (
+        index_series.reindex(
+            variance_monthly.index
+        )
+    )
+
+    monthly_returns = np.log(
+        sampled_prices.to_numpy()[1:]
+        / sampled_prices.to_numpy()[:-1]
+    )
+
+    return_shocks = (
+        monthly_returns
+        - monthly_returns.mean()
+    ) / variance_scale
+
+    variance_shocks = (
+        residuals
+        / (
+            xi
+            * variance_scale
+        )
+    )
+
+    rho = float(
+        np.corrcoef(
+            return_shocks,
+            variance_shocks,
+        )[0, 1]
+    )
+
+    rho = float(
+        np.clip(
+            rho,
+            -0.95,
+            0.95,
+        )
+    )
+
+    v0 = float(
+        realized_variance.iloc[-1]
+    )
+
+    if (
+        theta <= 0.0
+        or xi <= 0.0
+        or v0 <= 0.0
+    ):
+        raise RuntimeError(
+            "Parametri Heston non validi."
+        )
+
+    return {
+        "kappa": float(kappa),
+        "theta": float(theta),
+        "xi": float(xi),
+        "rho": rho,
+        "v0": v0,
+    }
+
+
+def build_risk_neutral_parameters(
+    historical_parameters,
+    lambda_variance,
+):
+    kappa_p = historical_parameters["kappa"]
+    theta_p = historical_parameters["theta"]
+
+    kappa_q = (
+        kappa_p
+        + lambda_variance
+    )
+
+    if kappa_q <= 0.0:
+        raise RuntimeError(
+            "kappa sotto Q deve essere positivo."
+        )
+
+    theta_q = (
+        kappa_p
+        * theta_p
+        / kappa_q
+    )
+
+    return {
+        **historical_parameters,
+        "kappa": float(kappa_q),
+        "theta": float(theta_q),
+    }
+
+
+def bs_put_price(
+    S,
+    G,
+    r,
+    fee,
+    sigma,
+    T,
+):
+    if T <= 0:
+        return max(
+            G - S,
+            0.0,
+        )
+
+    if sigma <= 0:
+        return max(
+            G * np.exp(-r * T)
+            - S * np.exp(-fee * T),
+            0.0,
+        )
+
+    d1 = (
+        np.log(S / G)
+        + (
+            r
+            - fee
+            + 0.5 * sigma ** 2
+        ) * T
+    ) / (
+        sigma * np.sqrt(T)
+    )
+
+    d2 = (
+        d1
+        - sigma * np.sqrt(T)
+    )
+
+    return (
+        G
+        * np.exp(-r * T)
+        * norm.cdf(-d2)
+        - S
+        * np.exp(-fee * T)
+        * norm.cdf(-d1)
+    )
+
+
+def bs_put_delta(
+    S,
+    G,
+    r,
+    fee,
+    sigma,
+    T,
+):
+    if T <= 0:
+        return np.where(
+            np.asarray(S) < G,
+            -1.0,
+            0.0,
+        )
+
+    if sigma <= 0:
+        future_S = (
+            np.asarray(S)
+            * np.exp(
+                (r - fee) * T
+            )
+        )
+
+        return np.where(
+            future_S < G,
+            -np.exp(-fee * T),
+            0.0,
+        )
+
+    d1 = (
+        np.log(
+            np.asarray(S) / G
+        )
+        + (
+            r
+            - fee
+            + 0.5 * sigma ** 2
+        ) * T
