@@ -1,0 +1,200 @@
+        "Heston": 0,
+        "BS_sigma_equivalente": 1,
+        "BS_storica_1y": 2,
+        "BS_storica_3y": 3,
+        "BS_storica_5y": 4,
+    }
+
+    summary[
+        "ordine"
+    ] = (
+        summary[
+            "strategia"
+        ]
+        .map(order)
+        .fillna(99)
+    )
+
+    return (
+        summary
+        .sort_values(
+            "ordine"
+        )
+        .drop(
+            columns="ordine"
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+
+def main():
+    data = load_market_data()
+
+    index_series = (
+        data[
+            "INDEX_EUR"
+        ].dropna()
+    )
+
+    returns = log_returns(
+        index_series
+    )
+
+    parameters_historical = (
+        estimate_heston_parameters(
+            index_series
+        )
+    )
+
+    parameters_q = (
+        build_risk_neutral_parameters(
+            parameters_historical,
+            VARIANCE_RISK_PREMIUM_LAMBDA,
+        )
+    )
+
+    risk_free_column = (
+        f"RiskFree_"
+        f"{par.GMAB_MATURITY_YEARS}Y"
+    )
+
+    risk_free_series = (
+        pd.to_numeric(
+            data[
+                risk_free_column
+            ],
+            errors="coerce",
+        )
+        .dropna()
+    )
+
+    r = float(
+        risk_free_series.iloc[-1]
+    )
+
+    (
+        heston_analytic_price,
+        _,
+    ) = heston_put_price_delta(
+        par.INITIAL_FUND_VALUE,
+        par.G,
+        parameters_q["v0"],
+        r,
+        par.TOTAL_FEE_ANNUAL,
+        par.GMAB_MATURITY_YEARS,
+        parameters_q,
+    )
+
+    equivalent_sigma = (
+        find_equivalent_bs_sigma(
+            heston_analytic_price,
+            r,
+        )
+    )
+
+    bs_scenarios = {
+        "BS_sigma_equivalente": (
+            equivalent_sigma
+        ),
+        "BS_storica_1y": (
+            historical_volatility(
+                returns,
+                1,
+            )
+        ),
+        "BS_storica_3y": (
+            historical_volatility(
+                returns,
+                3,
+            )
+        ),
+        "BS_storica_5y": (
+            historical_volatility(
+                returns,
+                5,
+            )
+        ),
+    }
+
+    feller_left = (
+        2.0
+        * parameters_q["kappa"]
+        * parameters_q["theta"]
+    )
+
+    feller_right = (
+        parameters_q["xi"] ** 2
+    )
+
+    parameter_table = pd.DataFrame(
+        [
+            {
+                "kappa_P": parameters_historical["kappa"],
+                "theta_P": parameters_historical["theta"],
+                "xi_P": parameters_historical["xi"],
+                "rho_P": parameters_historical["rho"],
+                "v0": parameters_historical["v0"],
+                "lambda_varianza": VARIANCE_RISK_PREMIUM_LAMBDA,
+                "kappa_Q": parameters_q["kappa"],
+                "theta_Q": parameters_q["theta"],
+                "xi_Q": parameters_q["xi"],
+                "rho_Q": parameters_q["rho"],
+                "risk_free": r,
+                "fee": par.TOTAL_FEE_ANNUAL,
+                "sigma_bs_equivalente": equivalent_sigma,
+                "prezzo_heston": heston_analytic_price,
+                "feller_left_Q": feller_left,
+                "feller_right_Q": feller_right,
+                "feller_satisfied_Q": (
+                    feller_left
+                    >= feller_right
+                ),
+                "schema_simulazione": "Euler full truncation",
+                "finestra_varianza_giorni": VARIANCE_PROXY_WINDOW_DAYS,
+                "passo_campionamento_varianza_giorni": VARIANCE_SAMPLING_DAYS,
+                "finestre_varianza_sovrapposte": (
+                    VARIANCE_PROXY_WINDOW_DAYS
+                    > VARIANCE_SAMPLING_DAYS
+                ),
+                "stima_parametri": "dati storici - misura P",
+                "pricing_simulazione": "misura Q con lambda varianza = 0",
+                "calibrazione_superficie_opzioni": False,
+            }
+        ]
+    )
+
+    parameter_table.to_csv(
+        OUTPUT_PARAMETERS,
+        index=False,
+    )
+
+    print(
+        "=== PARAMETRIZZAZIONE HESTON ==="
+    )
+
+    print(
+        "Parametri stimati su dati storici "
+        "dell'indice proxy in EUR (misura P)."
+    )
+
+    print(
+        "Non si tratta di una calibrazione "
+        "a una superficie di opzioni."
+    )
+
+    print(
+        f"kappa_P: "
+        f"{parameters_historical['kappa']:.6f}"
+    )
+
+    print(
+        f"theta_P: "
+        f"{parameters_historical['theta']:.6f}"
+    )
+
+    print(
+        f"xi_P: "
+        f"{parameters_historical['xi']:.6f}"
+    )
