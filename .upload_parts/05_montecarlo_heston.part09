@@ -1,0 +1,200 @@
+
+    print(
+        f"rho_P: "
+        f"{parameters_historical['rho']:.6f}"
+    )
+
+    print(
+        f"v0: "
+        f"{parameters_historical['v0']:.6f}"
+    )
+
+    print(
+        "\n=== PASSAGGIO P -> Q ==="
+    )
+
+    print(
+        f"Premio al rischio di varianza lambda: "
+        f"{VARIANCE_RISK_PREMIUM_LAMBDA:.6f}"
+    )
+
+    print(
+        "Assunzione di base: lambda = 0, quindi "
+        "kappa e theta stimati sotto P sono "
+        "riutilizzati sotto Q."
+    )
+
+    print(
+        f"kappa_Q: "
+        f"{parameters_q['kappa']:.6f}"
+    )
+
+    print(
+        f"theta_Q: "
+        f"{parameters_q['theta']:.6f}"
+    )
+
+    print(
+        "\n=== DIAGNOSTICA HESTON ==="
+    )
+
+    print(
+        f"2*kappa_Q*theta_Q: "
+        f"{feller_left:.6f}"
+    )
+
+    print(
+        f"xi_Q^2: "
+        f"{feller_right:.6f}"
+    )
+
+    print(
+        f"Feller soddisfatta: "
+        f"{feller_left >= feller_right}"
+    )
+
+    print(
+        "Schema di simulazione: Euler full truncation."
+    )
+
+    print(
+        f"Varianza realizzata: finestra rolling "
+        f"di {VARIANCE_PROXY_WINDOW_DAYS} giorni, "
+        f"campionata ogni {VARIANCE_SAMPLING_DAYS} giorni."
+    )
+
+    if (
+        VARIANCE_PROXY_WINDOW_DAYS
+        > VARIANCE_SAMPLING_DAYS
+    ):
+        print(
+            "Nota: le finestre della varianza realizzata "
+            "sono sovrapposte; questo puo' aumentare la "
+            "persistenza stimata e ridurre kappa."
+        )
+
+    print(
+        "\n=== VOLATILITA' BS EQUIVALENTE ==="
+    )
+
+    print(
+        f"Prezzo Heston: "
+        f"{heston_analytic_price:.6f}"
+    )
+
+    print(
+        f"Sigma BS equivalente: "
+        f"{equivalent_sigma:.4%}"
+    )
+
+    print(
+        f"Prezzo BS equivalente: "
+        f"{bs_put_price(
+            par.INITIAL_FUND_VALUE,
+            par.G,
+            r,
+            par.TOTAL_FEE_ANNUAL,
+            equivalent_sigma,
+            par.GMAB_MATURITY_YEARS,
+        ):.6f}"
+    )
+
+    print(
+        "\n=== SIMULAZIONE HESTON ==="
+    )
+
+    print(
+        f"Percorsi: {N_PATHS}"
+    )
+
+    print(
+        f"Scadenza: "
+        f"{par.GMAB_MATURITY_YEARS} anni"
+    )
+
+    print(
+        f"Ribilanciamento: "
+        f"{par.BASE_REBALANCE_FREQUENCY}"
+    )
+
+    print(
+        f"Tasso risk-free: "
+        f"{r:.4%}"
+    )
+
+    print(
+        f"Fee: "
+        f"{par.TOTAL_FEE_ANNUAL:.4%}"
+    )
+
+    (
+        hedge_paths,
+        fund_paths,
+        variance_paths,
+        times,
+        average_realized_variance,
+    ) = simulate_heston_paths(
+        parameters_q,
+        r,
+    )
+
+    payoff = np.maximum(
+        par.G
+        - fund_paths[:, -1],
+        0.0,
+    )
+
+    heston_mc_price = float(
+        np.exp(
+            -r
+            * par.GMAB_MATURITY_YEARS
+        )
+        * payoff.mean()
+    )
+
+    print(
+        "\n=== CONTROLLO PREZZO HESTON ==="
+    )
+
+    print(
+        f"Prezzo analitico: "
+        f"{heston_analytic_price:.6f}"
+    )
+
+    print(
+        f"Prezzo Monte Carlo: "
+        f"{heston_mc_price:.6f}"
+    )
+
+    print(
+        f"Differenza: "
+        f"{heston_mc_price - heston_analytic_price:.6f}"
+    )
+
+    results = []
+
+    (
+        heston_price,
+        heston_error,
+    ) = run_heston_hedge(
+        hedge_paths,
+        fund_paths,
+        variance_paths,
+        times,
+        parameters_q,
+        r,
+    )
+
+    variance_regression = (
+        heston_variance_regression(
+            average_realized_variance,
+            heston_error,
+        )
+    )
+
+    variance_regression.to_csv(
+        OUTPUT_VARIANCE_REGRESSION,
+        index=False,
+    )
+
+    print(
