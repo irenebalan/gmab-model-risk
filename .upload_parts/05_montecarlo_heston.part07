@@ -1,0 +1,200 @@
+        - ss_residual
+        / ss_total
+    )
+
+    correlation = float(
+        np.corrcoef(
+            x,
+            y,
+        )[0, 1]
+    )
+
+    regression_table = pd.DataFrame(
+        [
+            {
+                "n_percorsi": len(x),
+                "varianza_media_realizzata_media": (
+                    x.mean()
+                ),
+                "varianza_media_realizzata_std": (
+                    x.std(
+                        ddof=1
+                    )
+                ),
+                "hedging_error_medio": (
+                    y.mean()
+                ),
+                "alpha": alpha,
+                "beta": beta,
+                "r_squared": r_squared,
+                "correlazione": correlation,
+            }
+        ]
+    )
+
+    return regression_table
+
+def summarize_results(
+    results,
+):
+    data = pd.DataFrame(
+        results
+    )
+
+    data[
+        "errore_totale_assoluto"
+    ] = (
+        data[
+            "hedging_error_totale"
+        ].abs()
+    )
+
+    data[
+        "errore_totale_quadrato"
+    ] = (
+        data[
+            "hedging_error_totale"
+        ] ** 2
+    )
+
+    data[
+        "errore_hedging_assoluto"
+    ] = (
+        data[
+            "hedging_error_capitale_equo"
+        ].abs()
+    )
+
+    data[
+        "errore_hedging_quadrato"
+    ] = (
+        data[
+            "hedging_error_capitale_equo"
+        ] ** 2
+    )
+
+    data[
+        "deficit_totale"
+    ] = (
+        data[
+            "hedging_error_totale"
+        ] < 0
+    )
+
+    data[
+        "deficit_hedging"
+    ] = (
+        data[
+            "hedging_error_capitale_equo"
+        ] < 0
+    )
+
+    summary = (
+        data.groupby(
+            "strategia",
+            as_index=False,
+        )
+        .agg(
+            sigma_bs=(
+                "sigma_bs",
+                "first",
+            ),
+            prezzo_iniziale=(
+                "prezzo_iniziale",
+                "first",
+            ),
+            pricing_error_t0=(
+                "pricing_error_t0",
+                "first",
+            ),
+            pricing_error_scadenza=(
+                "pricing_error_scadenza",
+                "first",
+            ),
+            errore_totale_medio=(
+                "hedging_error_totale",
+                "mean",
+            ),
+            mae_totale=(
+                "errore_totale_assoluto",
+                "mean",
+            ),
+            mse_totale=(
+                "errore_totale_quadrato",
+                "mean",
+            ),
+            errore_hedging_medio=(
+                "hedging_error_capitale_equo",
+                "mean",
+            ),
+            mae_hedging=(
+                "errore_hedging_assoluto",
+                "mean",
+            ),
+            mse_hedging=(
+                "errore_hedging_quadrato",
+                "mean",
+            ),
+            frequenza_deficit_totale=(
+                "deficit_totale",
+                "mean",
+            ),
+            frequenza_deficit_hedging=(
+                "deficit_hedging",
+                "mean",
+            ),
+            peggior_errore_totale=(
+                "hedging_error_totale",
+                "min",
+            ),
+            miglior_errore_totale=(
+                "hedging_error_totale",
+                "max",
+            ),
+        )
+    )
+
+    summary[
+        "rmse_totale"
+    ] = np.sqrt(
+        summary[
+            "mse_totale"
+        ]
+    )
+
+    summary[
+        "rmse_hedging"
+    ] = np.sqrt(
+        summary[
+            "mse_hedging"
+        ]
+    )
+
+    summary[
+        "frequenza_deficit_totale_pct"
+    ] = (
+        summary[
+            "frequenza_deficit_totale"
+        ]
+        * 100
+    )
+
+    summary[
+        "frequenza_deficit_hedging_pct"
+    ] = (
+        summary[
+            "frequenza_deficit_hedging"
+        ]
+        * 100
+    )
+
+    summary = summary.drop(
+        columns=[
+            "mse_totale",
+            "mse_hedging",
+            "frequenza_deficit_totale",
+            "frequenza_deficit_hedging",
+        ]
+    )
+
+    order = {
