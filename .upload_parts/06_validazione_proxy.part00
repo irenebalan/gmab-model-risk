@@ -1,0 +1,200 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+import parametri as par
+
+
+ROLLING_MONTHS = 36
+
+OUTPUT_SUMMARY = (
+    par.OUTPUT_DIR
+    / "validazione_proxy_sintesi.csv"
+)
+
+OUTPUT_MONTHLY = (
+    par.OUTPUT_DIR
+    / "validazione_proxy_mensile.csv"
+)
+
+OUTPUT_PLOT_LEVELS = (
+    par.OUTPUT_DIR
+    / "validazione_proxy_normalizzata.png"
+)
+
+OUTPUT_PLOT_CORRELATION = (
+    par.OUTPUT_DIR
+    / "validazione_proxy_correlazione_rolling.png"
+)
+
+OUTPUT_PLOT_TRACKING = (
+    par.OUTPUT_DIR
+    / "validazione_proxy_tracking_error_rolling.png"
+)
+
+OUTPUT_PLOT_ROLLING = (
+    par.OUTPUT_DIR
+    / "validazione_proxy_rolling.png"
+)
+
+def log_returns(series):
+    return np.log(
+        series
+        / series.shift(1)
+    )
+
+
+def calculate_metrics(
+    etf_returns,
+    index_returns,
+    periods_per_year,
+):
+    data = pd.concat(
+        [
+            etf_returns.rename("ETF"),
+            index_returns.rename("INDEX"),
+        ],
+        axis=1,
+    ).dropna()
+
+    if len(data) < 2:
+        raise RuntimeError(
+            "Osservazioni insufficienti "
+            "per calcolare le metriche."
+        )
+
+    correlation = float(
+        data["ETF"].corr(
+            data["INDEX"]
+        )
+    )
+
+    variance_index = float(
+        data["INDEX"].var(
+            ddof=1
+        )
+    )
+
+    if variance_index <= 0:
+        raise RuntimeError(
+            "Varianza dell'indice nulla "
+            "o non valida."
+        )
+
+    covariance = float(
+        data[
+            ["ETF", "INDEX"]
+        ]
+        .cov()
+        .loc[
+            "ETF",
+            "INDEX",
+        ]
+    )
+
+    beta = (
+        covariance
+        / variance_index
+    )
+
+    alpha_period = float(
+        data["ETF"].mean()
+        - beta
+        * data["INDEX"].mean()
+    )
+
+    alpha_annualized = (
+        alpha_period
+        * periods_per_year
+    )
+
+    etf_volatility = float(
+        data["ETF"].std(
+            ddof=1
+        )
+        * np.sqrt(
+            periods_per_year
+        )
+    )
+
+    index_volatility = float(
+        data["INDEX"].std(
+            ddof=1
+        )
+        * np.sqrt(
+            periods_per_year
+        )
+    )
+
+    active_returns = (
+        data["ETF"]
+        - data["INDEX"]
+    )
+
+    tracking_error = float(
+        active_returns.std(
+            ddof=1
+        )
+        * np.sqrt(
+            periods_per_year
+        )
+    )
+
+    active_return_annualized = float(
+        active_returns.mean()
+        * periods_per_year
+    )
+
+    residuals = (
+        data["ETF"]
+        - (
+            alpha_period
+            + beta
+            * data["INDEX"]
+        )
+    )
+
+    residual_basis_risk = float(
+        residuals.std(
+            ddof=1
+        )
+        * np.sqrt(
+            periods_per_year
+        )
+    )
+
+    r_squared = (
+        correlation ** 2
+    )
+
+    return {
+        "osservazioni": len(data),
+        "correlazione": correlation,
+        "r_squared": r_squared,
+        "beta": beta,
+        "alpha_annualizzata": alpha_annualized,
+        "vol_etf_annualizzata": etf_volatility,
+        "vol_indice_annualizzata": index_volatility,
+        "tracking_error_annualizzato": tracking_error,
+        "active_return_annualizzato": active_return_annualized,
+        "basis_risk_residuo_annualizzato": residual_basis_risk,
+    }
+
+
+def main():
+    par.OUTPUT_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    data = pd.read_csv(
+        par.FILE_DATI_MERCATO,
+        parse_dates=["Date"],
+        index_col="Date",
+    ).sort_index()
+
+    required = {
+        "ETF_EUR",
+        "INDEX_EUR",
+    }
+
