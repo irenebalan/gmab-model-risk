@@ -1,3 +1,503 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from scipy.stats import norm
+
+import parametri as par
+
+
+HISTORICAL_WINDOWS_YEARS = {
+    "storica_1y": 1,
+    "storica_3y": 3,
+    "storica_5y": 5,
+}
+
+OUTPUT_WINDOWS = par.OUTPUT_DIR / "hedging_gmab_per_finestra.csv"
+OUTPUT_SCENARIOS = par.OUTPUT_DIR / "hedging_gmab_sintesi.csv"
+OUTPUT_CORRELATIONS = par.OUTPUT_DIR / "hedging_volatility_error_correlation.csv"
+OUTPUT_PROXY_DRAG = par.OUTPUT_DIR / "hedging_proxy_drag_sensitivity.csv"
+OUTPUT_PLOT = par.OUTPUT_DIR / "hedging_rmse_per_frequenza.png"
+OUTPUT_PLOT_VOLATILITY_ERROR = par.OUTPUT_DIR / "hedging_error_vs_volatility_gap.png"
+OUTPUT_PLOT_PROXY_DRAG = par.OUTPUT_DIR / "hedging_proxy_drag_sensitivity.png"
+
+
+def bs_put_price(S, G, r, fee, sigma, T):
+    if T <= 0:
+        return max(G - S, 0.0)
+
+    if sigma <= 0:
+        return max(
+            G * np.exp(-r * T) - S * np.exp(-fee * T),
+            0.0,
+        )
+
+    d1 = (
+        np.log(S / G)
+        + (r - fee + 0.5 * sigma ** 2) * T
+    ) / (sigma * np.sqrt(T))
+
+    d2 = d1 - sigma * np.sqrt(T)
+
+    return (
+        G * np.exp(-r * T) * norm.cdf(-d2)
+        - S * np.exp(-fee * T) * norm.cdf(-d1)
+    )
+
+
+def bs_put_delta(S, G, r, fee, sigma, T):
+    if T <= 0:
+        return -1.0 if S < G else 0.0
+
+    if sigma <= 0:
+        future_S = S * np.exp((r - fee) * T)
+        if future_S < G:
+            return -np.exp(-fee * T)
+        return 0.0
+
+    d1 = (
+        np.log(S / G)
+        + (r - fee + 0.5 * sigma ** 2) * T
+    ) / (sigma * np.sqrt(T))
+
+    return np.exp(-fee * T) * (norm.cdf(d1) - 1.0)
+
+
+def load_market_data():
+    data = pd.read_csv(
+        par.FILE_DATI_MERCATO,
+        parse_dates=["Date"],
+        index_col="Date",
+    ).sort_index()
+
+    risk_free_column = f"RiskFree_{par.GMAB_MATURITY_YEARS}Y"
+
+    required = {
+        "INDEX_EUR",
+        "VIX",
+        risk_free_column,
+    }
+
+    missing = required.difference(data.columns)
+
+    if missing:
+        raise ValueError(
+            f"Mancano le colonne {sorted(missing)} "
+            f"in {par.FILE_DATI_MERCATO}"
+        )
+
+    for column in required:
+        data[column] = pd.to_numeric(
+            data[column],
+            errors="coerce",
+        )
+
+    return data.loc[
+        ~data.index.duplicated(keep="first")
+    ]
+
+
+def log_returns(price_series):
+    return np.log(
+        price_series / price_series.shift(1)
+    ).dropna()
+
+
+def first_trading_date_on_or_after(index, target_date):
+    position = index.searchsorted(
+        pd.Timestamp(target_date),
+        side="left",
+    )
+
+    if position >= len(index):
+        return None
+
+    return index[position]
+
+
+def first_rate_date(market_data):
+    column = f"RiskFree_{par.GMAB_MATURITY_YEARS}Y"
+    rates = market_data[column].dropna()
+
+    if rates.empty:
+        raise RuntimeError(
+            "Nessun tasso risk-free decennale disponibile."
+        )
+
+    return rates.index[0]
+
+
+def get_initial_risk_free_rate(market_data, start_date):
+    column = f"RiskFree_{par.GMAB_MATURITY_YEARS}Y"
+
+    rates = market_data.loc[
+        market_data.index <= start_date,
+        column,
+    ].dropna()
+
+    if rates.empty:
+        raise RuntimeError(
+            f"Nessun tasso {par.GMAB_MATURITY_YEARS}Y "
+            f"disponibile alla data {start_date.date()}."
+        )
+
+    return float(rates.iloc[-1])
+
+
+def generate_backtest_windows(market_data):
+    index_series = market_data["INDEX_EUR"].dropna()
+    index = index_series.index
+    returns = log_returns(index_series)
+
+    max_lookback_days = (
+        max(HISTORICAL_WINDOWS_YEARS.values())
+        * par.TRADING_DAYS_PER_YEAR
+    )
+
+    if len(returns) < max_lookback_days:
+        raise RuntimeError(
+            "Dati insufficienti per stimare la volatilita' iniziale."
+        )
+
+    last_required_return_date = returns.index[
+        max_lookback_days - 1
+    ]
+
+    first_volatility_position = index.searchsorted(
+        last_required_return_date,
+        side="right",
+    )
+
+    if first_volatility_position >= len(index):
+        raise RuntimeError(
+            "Impossibile determinare la prima finestra di backtest."
+        )
+
+    first_volatility_date = index[first_volatility_position]
+
+    first_start = max(
+        first_volatility_date,
+        first_rate_date(market_data),
+    )
+
+    first_start = first_trading_date_on_or_after(
+        index,
+        first_start,
+    )
+
+    last_start = (
+        index.max()
+        - pd.DateOffset(years=par.GMAB_MATURITY_YEARS)
+    )
+
+    windows = []
+    target_start = first_start
+
+    while target_start <= last_start:
+        start_date = first_trading_date_on_or_after(
+            index,
+            target_start,
+        )
+
+        if start_date is None:
+            break
+
+        target_end = (
+            start_date
+            + pd.DateOffset(years=par.GMAB_MATURITY_YEARS)
+        )
+
+        end_date = first_trading_date_on_or_after(
+            index,
+            target_end,
+        )
+
+        if end_date is not None and end_date > start_date:
+            windows.append((start_date, end_date))
+
+        target_start = (
+            start_date
+            + pd.DateOffset(years=par.BACKTEST_STEP_YEARS)
+        )
+
+    windows = list(dict.fromkeys(windows))
+
+    if not windows:
+        raise RuntimeError(
+            "Dati insufficienti per costruire le finestre di backtest."
+        )
+
+    return windows
+
+
+def estimate_volatility_scenarios(market_data, start_date):
+    index_series = market_data["INDEX_EUR"].dropna()
+    returns = log_returns(index_series)
+    past_returns = returns.loc[returns.index < start_date]
+
+    scenarios = {}
+
+    for scenario, years in HISTORICAL_WINDOWS_YEARS.items():
+        n_days = years * par.TRADING_DAYS_PER_YEAR
+
+        if len(past_returns) < n_days:
+            raise RuntimeError(
+                f"Dati insufficienti per {scenario} alla data "
+                f"{start_date.date()}: {len(past_returns)} osservazioni."
+            )
+
+        sample = past_returns.iloc[-n_days:]
+
+        scenarios[scenario] = float(
+            sample.std(ddof=1)
+            * np.sqrt(par.TRADING_DAYS_PER_YEAR)
+        )
+
+    vix = market_data.loc[
+        market_data.index <= start_date,
+        "VIX",
+    ].dropna()
+
+    if not vix.empty:
+        scenarios["proxy_vix_30d"] = float(vix.iloc[-1]) / 100.0
+
+    return scenarios
+
+
+def build_fund_paths(
+    market_data,
+    start_date,
+    end_date,
+    proxy_drag,
+):
+    index_series = market_data.loc[
+        start_date:end_date,
+        "INDEX_EUR",
+    ].dropna()
+
+    if len(index_series) < 2:
+        raise RuntimeError(
+            f"Percorso indice insufficiente tra "
+            f"{start_date.date()} e {end_date.date()}."
+        )
+
+    hedge_asset = (
+        par.INITIAL_FUND_VALUE
+        * index_series
+        / index_series.iloc[0]
+    )
+
+    elapsed_years = (
+        index_series.index - index_series.index[0]
+    ).days / 365.25
+
+    effective_fund_drag = (
+        get_effective_fund_drag(
+            proxy_drag
+        )
+    )
+
+    fund = (
+        hedge_asset
+        * np.exp(
+            -effective_fund_drag
+            * elapsed_years
+        )
+    )
+
+    return pd.DataFrame(
+        {
+            "Hedge_EUR": hedge_asset,
+            "Fund_EUR": fund,
+        }
+    )
+
+
+def get_effective_fund_drag(proxy_drag):
+    if np.isclose(proxy_drag, 0.0):
+        return par.TOTAL_FEE_ANNUAL
+
+    return (
+        par.POLICY_FEE_ANNUAL
+        + proxy_drag
+    )
+
+
+def realized_volatility(paths):
+    returns = log_returns(paths["Hedge_EUR"])
+
+    if len(returns) < 2:
+        raise RuntimeError(
+            "Osservazioni insufficienti per la volatilita' realizzata."
+        )
+
+    return float(
+        returns.std(ddof=1)
+        * np.sqrt(par.TRADING_DAYS_PER_YEAR)
+    )
+
+
+def run_single_gmab_hedge(
+    paths,
+    sigma,
+    risk_free,
+    rebalance_days,
+    transaction_cost_rate,
+    proxy_drag,
+):
+    dates = paths.index
+    maturity_date = dates[-1]
+
+    S0 = float(paths["Fund_EUR"].iloc[0])
+    X0 = float(paths["Hedge_EUR"].iloc[0])
+    T = float(par.GMAB_MATURITY_YEARS)
+
+    effective_fund_drag = (
+        get_effective_fund_drag(
+            proxy_drag
+        )
+    )
+
+    initial_price = bs_put_price(
+        S0,
+        par.G,
+        risk_free,
+        effective_fund_drag,
+        sigma,
+        T,
+    )
+
+    initial_delta = bs_put_delta(
+        S0,
+        par.G,
+        risk_free,
+        effective_fund_drag,
+        sigma,
+        T,
+    )
+
+    hedge_units = initial_delta * S0 / X0
+
+    initial_transaction_cost = (
+        abs(hedge_units)
+        * X0
+        * transaction_cost_rate
+    )
+
+    cash_account = (
+        initial_price
+        - hedge_units * X0
+        - initial_transaction_cost
+    )
+
+    total_transaction_cost = initial_transaction_cost
+
+    for i in range(1, len(paths)):
+        previous_date = dates[i - 1]
+        current_date = dates[i]
+
+        elapsed = (
+            current_date - previous_date
+        ).days / 365.25
+
+        cash_account *= np.exp(
+            risk_free * elapsed
+        )
+
+        current_S = float(paths["Fund_EUR"].iloc[i])
+        current_X = float(paths["Hedge_EUR"].iloc[i])
+
+        portfolio_value = (
+            hedge_units * current_X
+            + cash_account
+        )
+
+        is_rebalance = i % rebalance_days == 0
+        is_maturity = i == len(paths) - 1
+
+        if is_rebalance and not is_maturity:
+            remaining_time = max(
+                (maturity_date - current_date).days / 365.25,
+                0.0,
+            )
+
+            new_delta = bs_put_delta(
+                current_S,
+                par.G,
+                risk_free,
+                effective_fund_drag,
+                sigma,
+                remaining_time,
+            )
+
+            new_hedge_units = (
+                new_delta
+                * current_S
+                / current_X
+            )
+
+            traded_units = (
+                new_hedge_units
+                - hedge_units
+            )
+
+            transaction_cost = (
+                abs(traded_units)
+                * current_X
+                * transaction_cost_rate
+            )
+
+            total_transaction_cost += transaction_cost
+
+            cash_account = (
+                portfolio_value
+                - new_hedge_units * current_X
+                - transaction_cost
+            )
+
+            hedge_units = new_hedge_units
+
+    terminal_fund_value = float(
+        paths["Fund_EUR"].iloc[-1]
+    )
+
+    terminal_hedge_value = float(
+        paths["Hedge_EUR"].iloc[-1]
+    )
+
+    portfolio_before_liquidation = (
+        hedge_units * terminal_hedge_value
+        + cash_account
+    )
+
+    liquidation_cost = (
+        abs(hedge_units)
+        * terminal_hedge_value
+        * transaction_cost_rate
+    )
+
+    total_transaction_cost += liquidation_cost
+
+    terminal_portfolio_value = (
+        portfolio_before_liquidation
+        - liquidation_cost
+    )
+
+    payoff = max(
+        par.G - terminal_fund_value,
+        0.0,
+    )
+
+    hedging_error = (
+        terminal_portfolio_value
+        - payoff
+    )
+
+    return {
+        "data_scadenza": maturity_date,
+        "prezzo_gmab_iniziale": initial_price,
+        "delta_iniziale": initial_delta,
+        "tasso_iniziale_fisso": risk_free,
+        "drag_fondo_effettivo": effective_fund_drag,
         "valore_fondo_scadenza": terminal_fund_value,
         "valore_hedge_scadenza": terminal_hedge_value,
         "valore_copertura_scadenza": terminal_portfolio_value,
