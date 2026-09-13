@@ -1,0 +1,183 @@
+        valuation_date,
+    ) = current_mismatch_analysis(
+        data,
+        heston,
+    )
+
+    backtest = (
+        historical_mismatch_analysis(
+            data
+        )
+    )
+
+    summary = (
+        summarize_historical(
+            backtest
+        )
+    )
+
+    current.to_csv(
+        OUTPUT_CURRENT,
+        index=False,
+        date_format="%Y-%m-%d",
+    )
+
+    backtest.to_csv(
+        OUTPUT_BACKTEST,
+        index=False,
+        date_format="%Y-%m-%d",
+    )
+
+    summary.to_csv(
+        OUTPUT_SUMMARY,
+        index=False,
+    )
+
+    create_plots(
+        current,
+        summary,
+    )
+
+    print(
+        "=== VIX MATURITY MISMATCH ==="
+    )
+
+    print(
+        f"Data di valutazione: "
+        f"{valuation_date.date()}"
+    )
+
+    print(
+        f"VIX corrente: "
+        f"{current['vix_sigma'].iloc[0]:.2%}"
+    )
+
+    print(
+        f"S0: "
+        f"{par.INITIAL_FUND_VALUE:.4f}"
+    )
+
+    print(
+        f"G: "
+        f"{par.G:.4f}"
+    )
+
+    print(
+        f"Fee: "
+        f"{par.TOTAL_FEE_ANNUAL:.4%}"
+    )
+
+    print(
+        "\n=== PARAMETRI HESTON "
+        "USATI COME BENCHMARK ==="
+    )
+
+    print(
+        f"kappa: "
+        f"{parameters['kappa']:.6f}"
+    )
+
+    print(
+        f"theta: "
+        f"{parameters['theta']:.6f}"
+    )
+
+    print(
+        f"xi: "
+        f"{parameters['xi']:.6f}"
+    )
+
+    print(
+        f"rho: "
+        f"{parameters['rho']:.6f}"
+    )
+
+    print(
+        f"v0: "
+        f"{parameters['v0']:.6f}"
+    )
+
+    print(
+        "\n=== CONFRONTO CORRENTE ==="
+    )
+
+    print(
+        current[
+            [
+                "scadenza_anni",
+                "vix_sigma",
+                "sigma_bs_equivalente_heston",
+                "gap_sigma",
+                "tasso_risk_free",
+                "prezzo_vix",
+                "prezzo_heston",
+                "errore_prezzo_vix",
+                "errore_prezzo_vix_pct",
+                "errore_delta",
+            ]
+        ].to_string(
+            index=False,
+            float_format=lambda value: (
+                f"{value:.6f}"
+            ),
+        )
+    )
+
+    print(
+        "\n=== BACKTEST STORICO "
+        "DEL MISMATCH ==="
+    )
+
+    print(
+        summary.to_string(
+            index=False,
+            float_format=lambda value: (
+                f"{value:.6f}"
+            ),
+        )
+    )
+
+    print(
+        "\nInterpretazione:"
+    )
+
+    print(
+        "Nel confronto storico, "
+        "la volatilita' realizzata futura "
+        "e' usata come benchmark ex post."
+    )
+
+    print(
+        "Il confronto Heston e' invece "
+        "un benchmark di modello e non "
+        "una volatilita' implicita "
+        "di mercato osservata."
+    )
+
+    print(
+        "\nFile salvati:"
+    )
+
+    print(
+        f"  - {OUTPUT_CURRENT}"
+    )
+
+    print(
+        f"  - {OUTPUT_BACKTEST}"
+    )
+
+    print(
+        f"  - {OUTPUT_SUMMARY}"
+    )
+
+    print(
+        f"  - {OUTPUT_PLOT_CURRENT}"
+    )
+
+    print(
+        f"  - {OUTPUT_PLOT_HISTORICAL}"
+    )
+
+
+if __name__ == "__main__":
+    main()
