@@ -1,0 +1,200 @@
+            risk_free,
+            par.TOTAL_FEE_ANNUAL,
+            vix_sigma,
+            float(maturity),
+        )
+
+        vix_delta = bs_put_delta(
+            par.INITIAL_FUND_VALUE,
+            par.G,
+            risk_free,
+            par.TOTAL_FEE_ANNUAL,
+            vix_sigma,
+            float(maturity),
+        )
+
+        price_error = (
+            vix_price
+            - heston_price
+        )
+
+        if heston_price != 0:
+            price_error_pct = (
+                price_error
+                / heston_price
+                * 100.0
+            )
+        else:
+            price_error_pct = np.nan
+
+        results.append(
+            {
+                "data_valutazione": (
+                    valuation_date
+                ),
+                "scadenza_anni": maturity,
+                "vix_sigma": vix_sigma,
+                "sigma_bs_equivalente_heston": (
+                    equivalent_sigma
+                ),
+                "gap_sigma": (
+                    vix_sigma
+                    - equivalent_sigma
+                ),
+                "tasso_risk_free": risk_free,
+                "prezzo_vix": vix_price,
+                "prezzo_heston": heston_price,
+                "errore_prezzo_vix": (
+                    price_error
+                ),
+                "errore_prezzo_vix_pct": (
+                    price_error_pct
+                ),
+                "delta_vix": vix_delta,
+                "delta_heston": heston_delta,
+                "errore_delta": (
+                    vix_delta
+                    - heston_delta
+                ),
+            }
+        )
+
+    return (
+        pd.DataFrame(results),
+        parameters,
+        valuation_date,
+    )
+
+
+def generate_windows(
+    data,
+    maturity,
+):
+    index_series = (
+        data[
+            "INDEX_EUR"
+        ].dropna()
+    )
+
+    index = index_series.index
+
+    rate_column = (
+        f"RiskFree_{maturity}Y"
+    )
+
+    valid_start_data = (
+        data[
+            [
+                "INDEX_EUR",
+                "VIX",
+                rate_column,
+            ]
+        ]
+        .dropna()
+    )
+
+    if valid_start_data.empty:
+        return []
+
+    first_start = (
+        valid_start_data.index[0]
+    )
+
+    last_start = (
+        index.max()
+        - pd.DateOffset(
+            years=maturity
+        )
+    )
+
+    windows = []
+
+    target_start = (
+        first_start
+    )
+
+    while (
+        target_start
+        <= last_start
+    ):
+        start_date = (
+            first_trading_date_on_or_after(
+                index,
+                target_start,
+            )
+        )
+
+        if start_date is None:
+            break
+
+        target_end = (
+            start_date
+            + pd.DateOffset(
+                years=maturity
+            )
+        )
+
+        end_date = (
+            first_trading_date_on_or_after(
+                index,
+                target_end,
+            )
+        )
+
+        if (
+            end_date is not None
+            and end_date > start_date
+        ):
+            windows.append(
+                (
+                    start_date,
+                    end_date,
+                )
+            )
+
+        target_start = (
+            start_date
+            + pd.DateOffset(
+                years=1
+            )
+        )
+
+    return list(
+        dict.fromkeys(
+            windows
+        )
+    )
+
+
+def historical_mismatch_analysis(
+    data,
+):
+    index_series = (
+        data[
+            "INDEX_EUR"
+        ].dropna()
+    )
+
+    results = []
+
+    for maturity in MATURITIES:
+        windows = generate_windows(
+            data,
+            maturity,
+        )
+
+        for (
+            start_date,
+            end_date,
+        ) in windows:
+            path = index_series.loc[
+                start_date:end_date
+            ]
+
+            returns = log_returns(
+                path
+            )
+
+            if len(returns) < 2:
+                continue
+
