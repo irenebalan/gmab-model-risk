@@ -1,0 +1,200 @@
+    ) / (
+        sigma * np.sqrt(T)
+    )
+
+    return (
+        np.exp(-fee * T)
+        * (
+            norm.cdf(d1)
+            - 1.0
+        )
+    )
+
+
+def find_equivalent_bs_sigma(
+    target_price,
+    r,
+):
+    def objective(sigma):
+        return (
+            bs_put_price(
+                par.INITIAL_FUND_VALUE,
+                par.G,
+                r,
+                par.TOTAL_FEE_ANNUAL,
+                sigma,
+                par.GMAB_MATURITY_YEARS,
+            )
+            - target_price
+        )
+
+    lower = 1e-6
+    upper = 3.0
+
+    lower_value = objective(
+        lower
+    )
+
+    upper_value = objective(
+        upper
+    )
+
+    if (
+        lower_value
+        * upper_value
+        > 0
+    ):
+        raise RuntimeError(
+            "Impossibile trovare la "
+            "volatilita' BS equivalente."
+        )
+
+    return float(
+        brentq(
+            objective,
+            lower,
+            upper,
+        )
+    )
+
+
+def heston_cd(
+    u,
+    T,
+    r,
+    fee,
+    kappa,
+    theta,
+    xi,
+    rho,
+):
+    iu = 1j * u
+
+    d = np.sqrt(
+        (
+            kappa
+            - rho * xi * iu
+        ) ** 2
+        + xi ** 2
+        * (
+            iu
+            + u ** 2
+        )
+    )
+
+    d = np.where(
+        np.real(d) < 0,
+        -d,
+        d,
+    )
+
+    g = (
+        kappa
+        - rho * xi * iu
+        - d
+    ) / (
+        kappa
+        - rho * xi * iu
+        + d
+    )
+
+    exp_dt = np.exp(
+        -d * T
+    )
+
+    C = (
+        iu
+        * (r - fee)
+        * T
+        + (
+            kappa
+            * theta
+            / xi ** 2
+        )
+        * (
+            (
+                kappa
+                - rho * xi * iu
+                - d
+            )
+            * T
+            - 2.0
+            * np.log(
+                (
+                    1.0
+                    - g * exp_dt
+                )
+                / (
+                    1.0
+                    - g
+                )
+            )
+        )
+    )
+
+    D = (
+        (
+            kappa
+            - rho * xi * iu
+            - d
+        )
+        / xi ** 2
+        * (
+            1.0
+            - exp_dt
+        )
+        / (
+            1.0
+            - g * exp_dt
+        )
+    )
+
+    return C, D
+
+
+def heston_put_price_delta(
+    S,
+    G,
+    v,
+    r,
+    fee,
+    T,
+    parameters,
+):
+    if T <= 0:
+        price = max(
+            G - S,
+            0.0,
+        )
+
+        delta = (
+            -1.0
+            if S < G
+            else 0.0
+        )
+
+        return price, delta
+
+    kappa = parameters["kappa"]
+    theta = parameters["theta"]
+    xi = parameters["xi"]
+    rho = parameters["rho"]
+
+    u = np.linspace(
+        1e-5,
+        INTEGRATION_MAX,
+        INTEGRATION_POINTS,
+    )
+
+    C2, D2 = heston_cd(
+        u,
+        T,
+        r,
+        fee,
+        kappa,
+        theta,
+        xi,
+        rho,
+    )
+
+    phi2 = np.exp(
