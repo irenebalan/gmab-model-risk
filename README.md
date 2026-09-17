@@ -26,6 +26,9 @@ L'analisi studia il rischio di modello nel pricing e nella copertura di una Guar
 - `05_montecarlo_heston.py`  
   Stima i parametri del modello di Heston, esegue la simulazione Monte Carlo e confronta le strategie di copertura Heston e Black--Scholes. Implementa inoltre il confronto a capitale iniziale equo e la regressione dell'errore di copertura Heston sulla varianza media realizzata lungo i percorsi simulati.
 
+- `05_montecarlo_heston_gamma.py`  
+  Estende l'analisi Monte Carlo introducendo una misura di varianza realizzata ponderata per il gamma della garanzia, calcolato con la volatilità Black--Scholes equivalente al prezzo iniziale Heston. Stima una regressione dell'hedging error Heston sulla varianza media realizzata e sulla varianza gamma-pesata, riportando anche l'incremento dell'R-squared e il partial R-squared associato al secondo regressore.  
+
 - `06_validazione_proxy.py`  
   Analizza la relazione tra l'ETF e l'indice proxy, considerando correlazione, beta, R-squared, tracking error e basis risk residuo.
 
@@ -55,9 +58,10 @@ Le principali dipendenze tra i moduli sono:
 ```text
 01 → 02 → 03
 01 → 04
-01 → 05
+01 → 05_montecarlo_heston
+01 → 05_montecarlo_heston_gamma
 01 → 06
-01 + funzioni di 05 → 07
+01 + funzioni di 05_montecarlo_heston → 07
 ```
 
 Gli script successivi possono quindi essere eseguiti in funzione dell'analisi di interesse.
